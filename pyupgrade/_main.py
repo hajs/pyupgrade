@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import re
 import sys
 import tokenize
@@ -28,6 +29,26 @@ from pyupgrade._string_helpers import unparse_parsed_string
 from pyupgrade._token_helpers import CLOSING
 from pyupgrade._token_helpers import OPENING
 from pyupgrade._token_helpers import remove_brace
+
+
+
+def _get_skip_lines(tokens: list[Token]) -> set[int]:
+    skip_lines = set()
+    pyupgrade_enabled = True
+    for token in tokens:
+        if token.name == 'COMMENT':
+            pragma = token.src[1:].strip()
+            if pragma == 'pyupgrade: skip':
+                skip_lines.add(token.line)
+            elif pragma == 'pyupgrade: off':
+                pyupgrade_enabled = False
+            elif pragma == 'pyupgrade: on':
+                pyupgrade_enabled = True
+        elif not pyupgrade_enabled:
+            skip_lines.add(token.line)
+    return skip_lines
+
+
 
 
 def inty(s: str) -> bool:
@@ -71,8 +92,12 @@ def _fix_plugins(contents_text: str, settings: Settings) -> str:
 
     _fixup_dedent_tokens(tokens)
 
+    skip_lines = _get_skip_lines(tokens)
+
     for i, token in reversed_enumerate(tokens):
         if not token.src:
+            continue
+        if token.line in skip_lines:
             continue
         # though this is a defaultdict, by using `.get()` this function's
         # self time is almost 50% faster
@@ -281,7 +306,13 @@ def _fix_tokens(contents_text: str) -> str:
         tokens = src_to_tokens(contents_text)
     except tokenize.TokenError:
         return contents_text
+
+    skip_lines = _get_skip_lines(tokens)
+
     for i, token in reversed_enumerate(tokens):
+        if token.line in skip_lines:
+            continue
+
         if token.name == 'STRING':
             tokens[i] = _fix_escape_sequences(_remove_u_prefix(tokens[i]))
         elif token.src == '(':
@@ -329,9 +360,20 @@ def _fix_file(filename: str, args: argparse.Namespace) -> int:
     if filename == '-':
         print(contents_text, end='')
     elif contents_text != contents_text_orig:
-        print(f'Rewriting {filename}', file=sys.stderr)
-        with open(filename, 'w', encoding='UTF-8', newline='') as f:
-            f.write(contents_text)
+        if args.diff:
+            diff = difflib.unified_diff(
+               contents_text_orig.splitlines(),
+               contents_text.splitlines(),
+               fromfile=f'old/{filename}',
+               tofile=f'new/{filename}',
+               lineterm='')
+            print('\n'.join(diff))
+        elif args.check:
+            print(f'Upgrades would be applied to {filename}')
+        else:
+            print(f'Rewriting {filename}', file=sys.stderr)
+            with open(filename, 'w', encoding='UTF-8', newline='') as f:
+                f.write(contents_text)
 
     if args.exit_zero_even_if_changed:
         return 0
@@ -342,6 +384,8 @@ def _fix_file(filename: str, args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('filenames', nargs='*')
+    parser.add_argument('--check', '-c', action='store_true', help="dry run")
+    parser.add_argument('--diff', '-d', action='store_true', help="unified diff")
     parser.add_argument('--exit-zero-even-if-changed', action='store_true')
     parser.add_argument('--keep-percent-format', action='store_true')
     parser.add_argument('--keep-mock', action='store_true')

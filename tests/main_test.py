@@ -196,3 +196,22 @@ def test_main_stdin_with_changes(capsys):
         assert main(('-',)) == 1
     out, err = capsys.readouterr()
     assert out == '{1, 2}\n'
+
+
+def test_main_skip(tmpdir):
+    f = tmpdir.join('t.py')
+    f.write('set((1, 2))  # pyupgrade: skip\n')
+    assert main((str(f),)) == 0
+
+    f.write('set((0, 1))\nset((1, 2))  # pyupgrade: skip\nset((2, 3))')
+    assert main((str(f),)) == 1
+    assert f.read() == "{0, 1}\nset((1, 2))  # pyupgrade: skip\n{2, 3}"
+
+
+def test_main_on_off(tmpdir):
+    f = tmpdir.join('t.py')
+    f.write('# pyupgrade: off\nset((1, 2))\n# pyupgrade: on')
+    assert main((str(f),)) == 0
+    f.write('set((0, 1))\n# pyupgrade: off\nset((1, 2))\n# pyupgrade: on\nset((2, 3))')
+    assert main((str(f),)) == 1
+    assert f.read() == "{0, 1}\n# pyupgrade: off\nset((1, 2))\n# pyupgrade: on\n{2, 3}"
